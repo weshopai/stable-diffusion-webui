@@ -29,7 +29,7 @@ cmd_opts_pre = parser_pre.parse_known_args()[0]
 data_path = cmd_opts_pre.data_dir
 
 models_path = os.path.join(data_path, "models")
-extensions_dir = os.path.join(data_path, "extensions")
+extensions_dir = os.path.join(os.path.dirname(os.path.dirname(data_path)), "extensions")
 extensions_builtin_dir = os.path.join(script_path, "extensions-builtin")
 config_states_dir = os.path.join(script_path, "config_states")
 default_output_dir = os.path.join(data_path, "outputs")

@@ -32,6 +32,11 @@ import piexif
 import piexif.helper
 from contextlib import closing
 from modules.progress import create_task_id, add_task_to_queue, start_task, finish_task, current_task
+from filelock import FileLock
+
+
+gpu_lock_file = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))), "resources", "lock"  ,"lock.lock")
+
 
 def script_name_to_index(name, scripts):
     try:
@@ -244,6 +249,7 @@ class Api:
         self.add_api_route("/sdapi/v1/scripts", self.get_scripts_list, methods=["GET"], response_model=models.ScriptsList)
         self.add_api_route("/sdapi/v1/script-info", self.get_script_info, methods=["GET"], response_model=list[models.ScriptInfo])
         self.add_api_route("/sdapi/v1/extensions", self.get_extensions_list, methods=["GET"], response_model=list[models.ExtensionItem])
+        self.add_api_route("/sdapi/v1/ping", self.ping, methods=["GET"])
 
         if shared.cmd_opts.api_server_stop:
             self.add_api_route("/sdapi/v1/server-kill", self.kill_webui, methods=["POST"])
@@ -269,7 +275,8 @@ class Api:
         if not self.default_script_arg_img2img:
             self.default_script_arg_img2img = self.init_default_script_args(img2img_script_runner)
 
-
+    def ping(self):
+        return 1
 
     def add_api_route(self, path: str, endpoint, **kwargs):
         if shared.cmd_opts.api_auth:
@@ -430,131 +437,135 @@ class Api:
         return params
 
     def text2imgapi(self, txt2imgreq: models.StableDiffusionTxt2ImgProcessingAPI):
-        task_id = txt2imgreq.force_task_id or create_task_id("txt2img")
+        with FileLock(gpu_lock_file):
 
-        script_runner = scripts.scripts_txt2img
+            task_id = txt2imgreq.force_task_id or create_task_id("txt2img")
 
-        infotext_script_args = {}
-        self.apply_infotext(txt2imgreq, "txt2img", script_runner=script_runner, mentioned_script_args=infotext_script_args)
+            script_runner = scripts.scripts_txt2img
 
-        selectable_scripts, selectable_script_idx = self.get_selectable_script(txt2imgreq.script_name, script_runner)
+            infotext_script_args = {}
+            self.apply_infotext(txt2imgreq, "txt2img", script_runner=script_runner, mentioned_script_args=infotext_script_args)
 
-        populate = txt2imgreq.copy(update={  # Override __init__ params
-            "sampler_name": validate_sampler_name(txt2imgreq.sampler_name or txt2imgreq.sampler_index),
-            "do_not_save_samples": not txt2imgreq.save_images,
-            "do_not_save_grid": not txt2imgreq.save_images,
-        })
-        if populate.sampler_name:
-            populate.sampler_index = None  # prevent a warning later on
+            selectable_scripts, selectable_script_idx = self.get_selectable_script(txt2imgreq.script_name, script_runner)
 
-        args = vars(populate)
-        args.pop('script_name', None)
-        args.pop('script_args', None) # will refeed them to the pipeline directly after initializing them
-        args.pop('alwayson_scripts', None)
-        args.pop('infotext', None)
+            populate = txt2imgreq.copy(update={  # Override __init__ params
+                "sampler_name": validate_sampler_name(txt2imgreq.sampler_name or txt2imgreq.sampler_index),
+                "do_not_save_samples": not txt2imgreq.save_images,
+                "do_not_save_grid": not txt2imgreq.save_images,
+            })
+            if populate.sampler_name:
+                populate.sampler_index = None  # prevent a warning later on
 
-        script_args = self.init_script_args(txt2imgreq, self.default_script_arg_txt2img, selectable_scripts, selectable_script_idx, script_runner, input_script_args=infotext_script_args)
+            args = vars(populate)
+            args.pop('script_name', None)
+            args.pop('script_args', None) # will refeed them to the pipeline directly after initializing them
+            args.pop('alwayson_scripts', None)
+            args.pop('infotext', None)
 
-        send_images = args.pop('send_images', True)
-        args.pop('save_images', None)
+            script_args = self.init_script_args(txt2imgreq, self.default_script_arg_txt2img, selectable_scripts, selectable_script_idx, script_runner, input_script_args=infotext_script_args)
 
-        add_task_to_queue(task_id)
+            send_images = args.pop('send_images', True)
+            args.pop('save_images', None)
 
-        with self.queue_lock:
-            with closing(StableDiffusionProcessingTxt2Img(sd_model=shared.sd_model, **args)) as p:
-                p.is_api = True
-                p.scripts = script_runner
-                p.outpath_grids = opts.outdir_txt2img_grids
-                p.outpath_samples = opts.outdir_txt2img_samples
+            add_task_to_queue(task_id)
 
-                try:
-                    shared.state.begin(job="scripts_txt2img")
-                    start_task(task_id)
-                    if selectable_scripts is not None:
-                        p.script_args = script_args
-                        processed = scripts.scripts_txt2img.run(p, *p.script_args) # Need to pass args as list here
-                    else:
-                        p.script_args = tuple(script_args) # Need to pass args as tuple here
-                        processed = process_images(p)
-                    finish_task(task_id)
-                finally:
-                    shared.state.end()
-                    shared.total_tqdm.clear()
+            with self.queue_lock:
+                with closing(StableDiffusionProcessingTxt2Img(sd_model=shared.sd_model, **args)) as p:
+                    p.is_api = True
+                    p.scripts = script_runner
+                    p.outpath_grids = opts.outdir_txt2img_grids
+                    p.outpath_samples = opts.outdir_txt2img_samples
 
-        b64images = list(map(encode_pil_to_base64, processed.images)) if send_images else []
+                    try:
+                        shared.state.begin(job="scripts_txt2img")
+                        start_task(task_id)
+                        if selectable_scripts is not None:
+                            p.script_args = script_args
+                            processed = scripts.scripts_txt2img.run(p, *p.script_args) # Need to pass args as list here
+                        else:
+                            p.script_args = tuple(script_args) # Need to pass args as tuple here
+                            processed = process_images(p)
+                        finish_task(task_id)
+                    finally:
+                        shared.state.end()
+                        shared.total_tqdm.clear()
 
-        return models.TextToImageResponse(images=b64images, parameters=vars(txt2imgreq), info=processed.js())
+            b64images = list(map(encode_pil_to_base64, processed.images)) if send_images else []
+
+            return models.TextToImageResponse(images=b64images, parameters=vars(txt2imgreq), info=processed.js())
 
     def img2imgapi(self, img2imgreq: models.StableDiffusionImg2ImgProcessingAPI):
-        task_id = img2imgreq.force_task_id or create_task_id("img2img")
+        with FileLock(gpu_lock_file):
 
-        init_images = img2imgreq.init_images
-        if init_images is None:
-            raise HTTPException(status_code=404, detail="Init image not found")
+            task_id = img2imgreq.force_task_id or create_task_id("img2img")
 
-        mask = img2imgreq.mask
-        if mask:
-            mask = decode_base64_to_image(mask)
+            init_images = img2imgreq.init_images
+            if init_images is None:
+                raise HTTPException(status_code=404, detail="Init image not found")
 
-        script_runner = scripts.scripts_img2img
+            mask = img2imgreq.mask
+            if mask:
+                mask = decode_base64_to_image(mask)
 
-        infotext_script_args = {}
-        self.apply_infotext(img2imgreq, "img2img", script_runner=script_runner, mentioned_script_args=infotext_script_args)
+            script_runner = scripts.scripts_img2img
 
-        selectable_scripts, selectable_script_idx = self.get_selectable_script(img2imgreq.script_name, script_runner)
+            infotext_script_args = {}
+            self.apply_infotext(img2imgreq, "img2img", script_runner=script_runner, mentioned_script_args=infotext_script_args)
 
-        populate = img2imgreq.copy(update={  # Override __init__ params
-            "sampler_name": validate_sampler_name(img2imgreq.sampler_name or img2imgreq.sampler_index),
-            "do_not_save_samples": not img2imgreq.save_images,
-            "do_not_save_grid": not img2imgreq.save_images,
-            "mask": mask,
-        })
-        if populate.sampler_name:
-            populate.sampler_index = None  # prevent a warning later on
+            selectable_scripts, selectable_script_idx = self.get_selectable_script(img2imgreq.script_name, script_runner)
 
-        args = vars(populate)
-        args.pop('include_init_images', None)  # this is meant to be done by "exclude": True in model, but it's for a reason that I cannot determine.
-        args.pop('script_name', None)
-        args.pop('script_args', None)  # will refeed them to the pipeline directly after initializing them
-        args.pop('alwayson_scripts', None)
-        args.pop('infotext', None)
+            populate = img2imgreq.copy(update={  # Override __init__ params
+                "sampler_name": validate_sampler_name(img2imgreq.sampler_name or img2imgreq.sampler_index),
+                "do_not_save_samples": not img2imgreq.save_images,
+                "do_not_save_grid": not img2imgreq.save_images,
+                "mask": mask,
+            })
+            if populate.sampler_name:
+                populate.sampler_index = None  # prevent a warning later on
 
-        script_args = self.init_script_args(img2imgreq, self.default_script_arg_img2img, selectable_scripts, selectable_script_idx, script_runner, input_script_args=infotext_script_args)
+            args = vars(populate)
+            args.pop('include_init_images', None)  # this is meant to be done by "exclude": True in model, but it's for a reason that I cannot determine.
+            args.pop('script_name', None)
+            args.pop('script_args', None)  # will refeed them to the pipeline directly after initializing them
+            args.pop('alwayson_scripts', None)
+            args.pop('infotext', None)
 
-        send_images = args.pop('send_images', True)
-        args.pop('save_images', None)
+            script_args = self.init_script_args(img2imgreq, self.default_script_arg_img2img, selectable_scripts, selectable_script_idx, script_runner, input_script_args=infotext_script_args)
 
-        add_task_to_queue(task_id)
+            send_images = args.pop('send_images', True)
+            args.pop('save_images', None)
 
-        with self.queue_lock:
-            with closing(StableDiffusionProcessingImg2Img(sd_model=shared.sd_model, **args)) as p:
-                p.init_images = [decode_base64_to_image(x) for x in init_images]
-                p.is_api = True
-                p.scripts = script_runner
-                p.outpath_grids = opts.outdir_img2img_grids
-                p.outpath_samples = opts.outdir_img2img_samples
+            add_task_to_queue(task_id)
 
-                try:
-                    shared.state.begin(job="scripts_img2img")
-                    start_task(task_id)
-                    if selectable_scripts is not None:
-                        p.script_args = script_args
-                        processed = scripts.scripts_img2img.run(p, *p.script_args) # Need to pass args as list here
-                    else:
-                        p.script_args = tuple(script_args) # Need to pass args as tuple here
-                        processed = process_images(p)
-                    finish_task(task_id)
-                finally:
-                    shared.state.end()
-                    shared.total_tqdm.clear()
+            with self.queue_lock:
+                with closing(StableDiffusionProcessingImg2Img(sd_model=shared.sd_model, **args)) as p:
+                    p.init_images = [decode_base64_to_image(x) for x in init_images]
+                    p.is_api = True
+                    p.scripts = script_runner
+                    p.outpath_grids = opts.outdir_img2img_grids
+                    p.outpath_samples = opts.outdir_img2img_samples
 
-        b64images = list(map(encode_pil_to_base64, processed.images)) if send_images else []
+                    try:
+                        shared.state.begin(job="scripts_img2img")
+                        start_task(task_id)
+                        if selectable_scripts is not None:
+                            p.script_args = script_args
+                            processed = scripts.scripts_img2img.run(p, *p.script_args) # Need to pass args as list here
+                        else:
+                            p.script_args = tuple(script_args) # Need to pass args as tuple here
+                            processed = process_images(p)
+                        finish_task(task_id)
+                    finally:
+                        shared.state.end()
+                        shared.total_tqdm.clear()
 
-        if not img2imgreq.include_init_images:
-            img2imgreq.init_images = None
-            img2imgreq.mask = None
+            b64images = list(map(encode_pil_to_base64, processed.images)) if send_images else []
 
-        return models.ImageToImageResponse(images=b64images, parameters=vars(img2imgreq), info=processed.js())
+            if not img2imgreq.include_init_images:
+                img2imgreq.init_images = None
+                img2imgreq.mask = None
+
+            return models.ImageToImageResponse(images=b64images, parameters=vars(img2imgreq), info=processed.js())
 
     def extras_single_image_api(self, req: models.ExtrasSingleImageRequest):
         reqDict = setUpscalers(req)
@@ -620,23 +631,25 @@ class Api:
         return models.ProgressResponse(progress=progress, eta_relative=eta_relative, state=shared.state.dict(), current_image=current_image, textinfo=shared.state.textinfo, current_task=current_task)
 
     def interrogateapi(self, interrogatereq: models.InterrogateRequest):
-        image_b64 = interrogatereq.image
-        if image_b64 is None:
-            raise HTTPException(status_code=404, detail="Image not found")
+        with FileLock(gpu_lock_file):
 
-        img = decode_base64_to_image(image_b64)
-        img = img.convert('RGB')
+            image_b64 = interrogatereq.image
+            if image_b64 is None:
+                raise HTTPException(status_code=404, detail="Image not found")
 
-        # Override object param
-        with self.queue_lock:
-            if interrogatereq.model == "clip":
-                processed = shared.interrogator.interrogate(img)
-            elif interrogatereq.model == "deepdanbooru":
-                processed = deepbooru.model.tag(img)
-            else:
-                raise HTTPException(status_code=404, detail="Model not found")
+            img = decode_base64_to_image(image_b64)
+            img = img.convert('RGB')
 
-        return models.InterrogateResponse(caption=processed)
+            # Override object param
+            with self.queue_lock:
+                if interrogatereq.model == "clip":
+                    processed = shared.interrogator.interrogate(img)
+                elif interrogatereq.model == "deepdanbooru":
+                    processed = deepbooru.model.tag(img)
+                else:
+                    raise HTTPException(status_code=404, detail="Model not found")
+
+            return models.InterrogateResponse(caption=processed)
 
     def interruptapi(self):
         shared.state.interrupt()

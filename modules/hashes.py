@@ -48,7 +48,7 @@ def sha256(filename, title, use_addnet_hash=False):
     if shared.cmd_opts.no_hashing:
         return None
 
-    print(f"Calculating sha256 for {filename}: ", end='')
+    print(f"Calculating sha256 for {filename}: ", end='\n')
     if use_addnet_hash:
         with open(filename, "rb") as file:
             sha256_value = addnet_hash_safetensors(file)

@@ -1,4 +1,5 @@
 from modules import launch_utils
+import sys
 
 args = launch_utils.args
 python = launch_utils.python
@@ -23,23 +24,25 @@ prepare_environment = launch_utils.prepare_environment
 configure_for_tests = launch_utils.configure_for_tests
 start = launch_utils.start
 
+sys.stdout.reconfigure(encoding='utf-8')
+sys.stderr.reconfigure(encoding='utf-8')
 
 def main():
-    if args.dump_sysinfo:
-        filename = launch_utils.dump_sysinfo()
+    # if args.dump_sysinfo:
+    #     filename = launch_utils.dump_sysinfo()
 
-        print(f"Sysinfo saved as {filename}. Exiting...")
+    #     print(f"Sysinfo saved as {filename}. Exiting...")
 
-        exit(0)
+    #     exit(0)
 
-    launch_utils.startup_timer.record("initial startup")
+    # launch_utils.startup_timer.record("initial startup")
 
-    with launch_utils.startup_timer.subcategory("prepare environment"):
-        if not args.skip_prepare_environment:
-            prepare_environment()
+    # with launch_utils.startup_timer.subcategory("prepare environment"):
+    #     if not args.skip_prepare_environment:
+    #         prepare_environment()
 
-    if args.test_server:
-        configure_for_tests()
+    # if args.test_server:
+    #     configure_for_tests()
 
     start()
 
