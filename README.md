@@ -5,10 +5,10 @@ A web interface for Stable Diffusion, implemented using Gradio library.
 
 ## Weshop Changes
 We made some changes to the original Automatic1111 Stable Diffusion Webui for better integration:
-1. Add GPU file lock at api file to stop a single GPU used by multiple services
+1. Add GPU file lock at api file to stop a single GPU been used by multiple services
 2. UTF-8 encoding for print messages and file names
 3. Alter some path names for seperations between modules
-4. Force models loaded into VRAM rather than RAM for consistency purpose
+4. Force models load into VRAM rather than RAM for consistency purpose
 5. Other minor changes
 
 ## Features
